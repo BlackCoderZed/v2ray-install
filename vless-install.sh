@@ -35,8 +35,11 @@ if [ $? -ne 0 ]; then
 fi
 
 # Extract private and public key
-REALITY_PRIVATE=$(echo "$REALITY_KEYS" | grep -i "Private key" | awk -F': ' '{print $2}')
-REALITY_PUBLIC=$(echo "$REALITY_KEYS" | grep -i "Public key" | awk -F': ' '{print $2}')
+# Extract private and public key by piping the keys variable
+# We use 'grep' to find the line and 'awk' to split it on the colon (':') and get the second field ($2)
+# The use of 'tr' is often safer to ensure no weird whitespace is left behind.
+REALITY_PRIVATE=$(echo "$REALITY_KEYS" | grep -i "Private key" | awk -F': ' '{print $2}' | tr -d '\n\r')
+REALITY_PUBLIC=$(echo "$REALITY_KEYS" | grep -i "Public key" | awk -F': ' '{print $2}' | tr -d '\n\r')
 
 # Generate a short ID for this user
 REALITY_SHORTID=$(openssl rand -hex 2)
