@@ -1,8 +1,8 @@
-bash <(cat <<'EOF'
 #!/bin/bash
 
 echo "======================================"
-echo "   VLESS + REALITY IP INSTALLER (FIXED)"
+echo "   Xray 25.12.8 VLESS + REALITY Installer"
+echo "       SINGLE USER PER CONFIG"
 echo "======================================"
 
 # Root check
@@ -21,29 +21,31 @@ echo "✅ Using port: $XRAY_PORT"
 
 # Install dependencies
 apt update -y
-apt install -y curl socat nano ufw jq openssl
+apt install -y curl unzip socat nano ufw jq
 
-# Install Xray (official)
+# Install Xray
 bash <(curl -Ls https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh)
 
-# Generate UUID
+# Generate REALITY keys using xray
+echo "🔑 Generating REALITY keys..."
+REALITY_KEYS=$(xray x25519)
+if [ $? -ne 0 ]; then
+  echo "❌ Failed to generate REALITY keys! Make sure Xray 25.12.8 is installed."
+  exit 1
+fi
+
+# Extract private and public key
+REALITY_PRIVATE=$(echo "$REALITY_KEYS" | grep -i "Private key" | awk -F': ' '{print $2}')
+REALITY_PUBLIC=$(echo "$REALITY_KEYS" | grep -i "Public key" | awk -F': ' '{print $2}')
+
+# Generate a short ID for this user
+REALITY_SHORTID=$(openssl rand -hex 2)
+
+# Generate UUID for single user
 UUID=$(xray uuid)
 
-# Generate REALITY keys via OpenSSL (WORKS ON ANY VPS)
-PRIVATE_KEY=$(openssl genpkey -algorithm X25519 -out /tmp/privkey.pem -pkeyopt ec_paramgen_curve:X25519 -outform PEM)
-PRIVATE_KEY=$(openssl pkey -in /tmp/privkey.pem -outform DER | tail -c 32 | xxd -p -c 32)
-PUBLIC_KEY=$(python3 - <<END
-from cryptography.hazmat.primitives.asymmetric import x25519
-import binascii
-priv_bytes = bytes.fromhex('$PRIVATE_KEY')
-pub = x25519.X25519PrivateKey.from_private_bytes(priv_bytes).public_key()
-print(binascii.hexlify(pub.public_bytes()).decode())
-END
-)
-SHORT_ID=$(openssl rand -hex 2)
-
-# Write Xray config
-cat > /usr/local/etc/xray/config.json <<EOF2
+# Create config
+cat > /usr/local/etc/xray/config.json <<EOF
 {
   "log": { "loglevel": "warning" },
   "inbounds": [
@@ -53,7 +55,11 @@ cat > /usr/local/etc/xray/config.json <<EOF2
       "protocol": "vless",
       "settings": {
         "clients": [
-          { "id": "$UUID", "flow": "xtls-rprx-vision", "email": "user1" }
+          {
+            "id": "$UUID",
+            "flow": "xtls-rprx-vision",
+            "email": "user1"
+          }
         ],
         "decryption": "none"
       },
@@ -65,15 +71,15 @@ cat > /usr/local/etc/xray/config.json <<EOF2
           "dest": "www.cloudflare.com:443",
           "xver": 0,
           "serverNames": ["www.cloudflare.com"],
-          "privateKey": "$PRIVATE_KEY",
-          "shortIds": ["$SHORT_ID"]
+          "privateKey": "$REALITY_PRIVATE",
+          "shortIds": ["$REALITY_SHORTID"]
         }
       }
     }
   ],
   "outbounds": [{ "protocol": "freedom" }]
 }
-EOF2
+EOF
 
 # Validate config
 xray run -test -config /usr/local/etc/xray/config.json
@@ -82,40 +88,36 @@ if [ $? -ne 0 ]; then
   exit 1
 fi
 
-# Firewall
+# Open firewall
 #ufw allow $XRAY_PORT
 #ufw --force enable
 
 # Restart Xray
 systemctl daemon-reload
-systemctl restart xray
 systemctl enable xray
+systemctl restart xray
 
 sleep 2
 
+# Check status
 if ! systemctl is-active --quiet xray; then
-  echo "❌ Xray failed to start. Check logs with: journalctl -u xray -n 30 --no-pager"
+  echo "❌ Xray failed to start. Check logs:"
+  journalctl -u xray -n 30 --no-pager
   exit 1
 fi
 
-# Get server IP
-SERVER_IP=$(curl -s https://api.ipify.org)
-
 # Generate VLESS link
-VLESS_LINK="vless://$UUID@$SERVER_IP:$XRAY_PORT?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=www.cloudflare.com&pbk=$PUBLIC_KEY&sid=$SHORT_ID#IP-ONLY-VLESS"
+SERVER_IP=$(curl -s https://api.ipify.org)
+VLESS_LINK="vless://$UUID@$SERVER_IP:$XRAY_PORT?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=www.cloudflare.com&pbk=$REALITY_PUBLIC&sid=$REALITY_SHORTID#IP-ONLY-VLESS"
 
 echo ""
 echo "======================================"
 echo "✅ INSTALLATION SUCCESSFUL"
-echo "Server IP  : $SERVER_IP"
-echo "Port       : $XRAY_PORT"
-echo "UUID       : $UUID"
-echo "Public Key : $PUBLIC_KEY"
-echo "Short ID   : $SHORT_ID"
+echo "Server IP      : $SERVER_IP"
+echo "Port           : $XRAY_PORT"
+echo "UUID           : $UUID"
+echo "REALITY PubKey : $REALITY_PUBLIC"
 echo ""
-echo "✅ VLESS LINK:"
+echo "✅ VLESS LINK (ONE USER ONLY):"
 echo "$VLESS_LINK"
 echo "======================================"
-
-EOF
-)
