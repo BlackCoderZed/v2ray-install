@@ -1,96 +1,118 @@
-cat > /usr/bin/vless-manager << 'EOF'
+bash <(cat << 'EOF'
 #!/bin/bash
 
-CONFIG_FILE="/usr/local/etc/xray/config.json"
-SERVICE="xray"
+echo "======================================"
+echo "  VLESS + REALITY IP ONLY INSTALLER"
+echo "  DYNAMIC PORT + 1 DEVICE PER CONFIG"
+echo "======================================"
 
-function restart_xray() {
-  systemctl restart $SERVICE
+# Root check
+if [ "$EUID" -ne 0 ]; then
+  echo "❌ Please run as root"
+  exit 1
+fi
+
+# Ask for Port
+read -p "👉 Enter your desired port (e.g. 443, 8443, 2053, 2087): " XRAY_PORT
+
+if ! [[ "$XRAY_PORT" =~ ^[0-9]+$ ]] || [ "$XRAY_PORT" -lt 1 ] || [ "$XRAY_PORT" -gt 65535 ]; then
+  echo "❌ Invalid port number!"
+  exit 1
+fi
+
+# Install dependencies
+apt update -y
+apt install -y curl socat nano ufw
+
+# Install Xray
+bash <(curl -Ls https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh)
+
+# Generate UUID
+UUID=$(xray uuid)
+
+# Generate Reality Keys
+KEYS=$(xray x25519)
+PRIVATE_KEY=$(echo "$KEYS" | grep "Private key" | awk '{print $3}')
+PUBLIC_KEY=$(echo "$KEYS" | grep "Public key" | awk '{print $3}')
+
+SHORT_ID=$(openssl rand -hex 2)
+
+# Create Xray config
+cat > /usr/local/etc/xray/config.json <<EOF2
+{
+  "inbounds": [
+    {
+      "port": $XRAY_PORT,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "$UUID",
+            "flow": "xtls-rprx-vision",
+            "email": "user1"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "www.cloudflare.com:443",
+          "xver": 0,
+          "serverNames": ["www.cloudflare.com"],
+          "privateKey": "$PRIVATE_KEY",
+          "shortIds": ["$SHORT_ID"]
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": ["http", "tls"]
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom"
+    }
+  ]
 }
+EOF2
 
-function get_port() {
-  grep '"port"' $CONFIG_FILE | head -1 | tr -dc '0-9'
-}
+# Open firewall
+ufw allow $XRAY_PORT
+ufw --force enable
 
-function add_user() {
-  read -p "Enter username: " USERNAME
-  UUID=$(xray uuid)
+# Restart Xray
+systemctl restart xray
+systemctl enable xray
 
-  jq ".inbounds[0].settings.clients += [{\"id\":\"$UUID\",\"flow\":\"xtls-rprx-vision\",\"email\":\"$USERNAME\"}]" $CONFIG_FILE > /tmp/config.json && mv /tmp/config.json $CONFIG_FILE
+# Get Server IP
+SERVER_IP=$(curl -s https://api.ipify.org)
 
-  restart_xray
+# Generate VLESS Link
+VLESS_LINK="vless://$UUID@$SERVER_IP:$XRAY_PORT?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=www.cloudflare.com&pbk=$PUBLIC_KEY&sid=$SHORT_ID#IP-ONLY-VLESS"
 
-  PORT=$(get_port)
-  SERVER_IP=$(curl -s https://api.ipify.org)
-  PUBLIC_KEY=$(jq -r '.inbounds[0].streamSettings.realitySettings.privateKey' $CONFIG_FILE | xargs -I{} echo "{}" | xray x25519 | grep "Public key" | awk '{print $3}')
-  SHORT_ID=$(jq -r '.inbounds[0].streamSettings.realitySettings.shortIds[0]' $CONFIG_FILE)
-
-  VLESS_LINK="vless://$UUID@$SERVER_IP:$PORT?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=www.cloudflare.com&pbk=$PUBLIC_KEY&sid=$SHORT_ID#$USERNAME"
-
-  echo ""
-  echo "✅ USER ADDED SUCCESSFULLY"
-  echo "Username : $USERNAME"
-  echo "UUID     : $UUID"
-  echo "Link     :"
-  echo "$VLESS_LINK"
-}
-
-function delete_user() {
-  read -p "Enter username to delete: " USERNAME
-
-  jq " .inbounds[0].settings.clients |= map(select(.email != \"$USERNAME\")) " $CONFIG_FILE > /tmp/config.json && mv /tmp/config.json $CONFIG_FILE
-
-  restart_xray
-
-  echo "✅ User '$USERNAME' deleted"
-}
-
-function list_users() {
-  echo ""
-  echo "✅ USER LIST:"
-  jq -r '.inbounds[0].settings.clients[].email' $CONFIG_FILE
-  echo ""
-}
-
-function uninstall_xray() {
-  read -p "❗ Are you sure you want to completely uninstall Xray/V2Ray? (yes/no): " CONFIRM
-  if [ "$CONFIRM" == "yes" ]; then
-    systemctl stop xray
-    systemctl disable xray
-    rm -rf /usr/local/etc/xray
-    rm -rf /usr/local/bin/xray
-    rm -rf /etc/systemd/system/xray.service
-    systemctl daemon-reload
-    echo "✅ Xray/V2Ray completely removed"
-  else
-    echo "❌ Uninstall cancelled"
-  fi
-}
-
-while true; do
-  clear
-  echo "======================================"
-  echo "   VLESS REALITY MANAGEMENT MENU"
-  echo "======================================"
-  echo "1️⃣  Add User"
-  echo "2️⃣  Delete User"
-  echo "3️⃣  List Users"
-  echo "4️⃣  Uninstall Xray/V2Ray"
-  echo "5️⃣  Exit"
-  echo "======================================"
-  read -p "Choose an option: " OPTION
-
-  case $OPTION in
-    1) add_user ;;
-    2) delete_user ;;
-    3) list_users ;;
-    4) uninstall_xray ;;
-    5) exit ;;
-    *) echo "❌ Invalid option" ;;
-  esac
-
-  read -p "Press Enter to continue..."
-done
-
+echo ""
+echo "======================================"
+echo "✅ INSTALLATION COMPLETE"
+echo "======================================"
+echo "Server IP     : $SERVER_IP"
+echo "Port          : $XRAY_PORT"
+echo "UUID          : $UUID"
+echo "Public Key    : $PUBLIC_KEY"
+echo "Short ID      : $SHORT_ID"
+echo ""
+echo "✅ VLESS SHARE LINK:"
+echo "$VLESS_LINK"
+echo ""
+echo "✅ Import into:"
+echo " - v2rayNG (Android)"
+echo " - v2rayN (Windows)"
+echo " - Shadowrocket (iOS)"
+echo ""
+echo "✅ Xray Status:"
+systemctl status xray --no-pager
 EOF
-chmod +x /usr/bin/vless-manager
+)
