@@ -30,21 +30,35 @@ sleep 10
 # --- 3. Key Generation and Parsing (CRITICAL FIX) ---
 echo "🔑 Generating REALITY keys and extracting private/public pair..."
 
-# Use process substitution with 'read' to reliably parse the multi-line key output.
-# IFS is set to split on ': '
-while IFS=": " read -r label value; do
-    if [[ "$label" == "Private key" ]]; then
-        REALITY_PRIVATE="$value"
-    elif [[ "$label" == "Public key" ]]; then
-        REALITY_PUBLIC="$value"
-    fi
-done < <(xray x25519)
+echo "🔑 Generating REALITY keys and extracting private/public pair..."
 
-# Verification check for extracted keys
+# Run xray x25519, capturing both standard output and standard error (2>&1).
+# We store the entire output in a variable for inspection.
+XRAY_KEY_OUTPUT=$(xray x25519 2>&1)
+
+# Now, use echo and grep to see if the key lines exist in the output
+# We pipe the output directly to the while loop for robust line-by-line reading.
+while IFS=": " read -r label value; do
+    # Trim leading/trailing whitespace using the 'xargs' method
+    trimmed_value=$(echo "$value" | xargs)
+
+    if [[ "$label" == "Private key" ]]; then
+        REALITY_PRIVATE="$trimmed_value"
+    elif [[ "$label" == "Public key" ]]; then
+        REALITY_PUBLIC="$trimmed_value"
+    fi
+done < <(echo "$XRAY_KEY_OUTPUT")
+
+# --- Debugging and Verification ---
 if [ -z "$REALITY_PRIVATE" ] || [ -z "$REALITY_PUBLIC" ]; then
-  echo "❌ Failed to parse REALITY keys from xray output! Exiting."
+  echo "❌ Failed to parse REALITY keys! Dumping Xray output for diagnosis:"
+  echo "--- XRAY OUTPUT START ---"
+  echo "$XRAY_KEY_OUTPUT"
+  echo "--- XRAY OUTPUT END ---"
+  echo "The output above should contain 'Private key' and 'Public key' lines."
   exit 1
 fi
+# --- End Debugging and Verification ---
 
 echo "✅ Keys extracted successfully."
 
