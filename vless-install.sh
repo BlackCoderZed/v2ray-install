@@ -11,7 +11,7 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-# Ask for port
+# --- 1. User Input ---
 read -p "👉 Enter your desired port (1-65535, e.g. 443, 8443): " XRAY_PORT
 if ! [[ "$XRAY_PORT" =~ ^[0-9]+$ ]] || [ "$XRAY_PORT" -lt 1 ] || [ "$XRAY_PORT" -gt 65535 ]; then
   echo "❌ Invalid port number!"
@@ -19,18 +19,18 @@ if ! [[ "$XRAY_PORT" =~ ^[0-9]+$ ]] || [ "$XRAY_PORT" -lt 1 ] || [ "$XRAY_PORT" 
 fi
 echo "✅ Using port: $XRAY_PORT"
 
-# Install dependencies
+# --- 2. Install Dependencies & Xray ---
+echo "⚙️ Installing dependencies and Xray core..."
 apt update -y
 apt install -y curl unzip socat nano ufw jq
-
-# Install Xray
-echo "⚙️ Installing Xray core..."
 bash <(curl -Ls https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh)
+echo "🕒 Waiting 10 seconds to ensure Xray installation is complete..."
+sleep 10
 
-# Generate REALITY keys using xray and capture them reliably
+# --- 3. Key Generation and Parsing (CRITICAL FIX) ---
 echo "🔑 Generating REALITY keys and extracting private/public pair..."
 
-# Use process substitution with 'read' to reliably parse multi-line key output.
+# Use process substitution with 'read' to reliably parse the multi-line key output.
 # IFS is set to split on ': '
 while IFS=": " read -r label value; do
     if [[ "$label" == "Private key" ]]; then
@@ -48,13 +48,11 @@ fi
 
 echo "✅ Keys extracted successfully."
 
-# Generate a short ID for this user
+# Generate identifiers
 REALITY_SHORTID=$(openssl rand -hex 2)
-
-# Generate UUID for single user
 UUID=$(xray uuid)
 
-# Create config
+# --- 4. Create Configuration File ---
 echo "📝 Creating Xray configuration file..."
 cat > /usr/local/etc/xray/config.json <<EOF
 {
@@ -92,7 +90,7 @@ cat > /usr/local/etc/xray/config.json <<EOF
 }
 EOF
 
-# Validate config
+# --- 5. Validation and Startup ---
 echo "🔍 Validating configuration..."
 xray run -test -config /usr/local/etc/xray/config.json
 if [ $? -ne 0 ]; then
@@ -101,11 +99,11 @@ if [ $? -ne 0 ]; then
 fi
 echo "✅ Configuration validated."
 
-# Open firewall (uncommented UFW commands)
-#echo "🔥 Configuring firewall (UFW)..."
-#ufw allow $XRAY_PORT
-#ufw --force enable
-#echo "✅ Port $XRAY_PORT allowed in UFW."
+# Open firewall
+echo "🔥 Configuring firewall (UFW)..."
+ufw allow $XRAY_PORT
+ufw --force enable
+echo "✅ Port $XRAY_PORT allowed in UFW."
 
 # Restart Xray
 echo "🚀 Starting Xray service..."
@@ -123,7 +121,7 @@ if ! systemctl is-active --quiet xray; then
 fi
 echo "✅ Xray service is running."
 
-# Generate VLESS link
+# --- 6. Output Final Link ---
 SERVER_IP=$(curl -s https://api.ipify.org)
 VLESS_LINK="vless://$UUID@$SERVER_IP:$XRAY_PORT?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=www.cloudflare.com&pbk=$REALITY_PUBLIC&sid=$REALITY_SHORTID#IP-ONLY-VLESS"
 
