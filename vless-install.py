@@ -23,7 +23,7 @@ print("🔑 Generating UUID...")
 uuid_val = str(uuid.uuid4())
 
 print("🔐 Generating Reality keys...")
-key_output = run("xray tools x25519")
+key_output = run("xray x25519")
 
 data = json.loads(key_output)
 private_key = data["privateKey"]
