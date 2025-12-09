@@ -1,55 +1,50 @@
 #!/bin/bash
+set -e
 
-echo "======================================"
-echo "   Xray 25.12.8 VLESS + REALITY Installer"
-echo "       SINGLE USER PER CONFIG"
-echo "======================================"
+PORT=443
+DEST="www.microsoft.com:443"
+SNI="www.microsoft.com"
+FP="chrome"
+XRAY_CONFIG="/usr/local/etc/xray/config.json"
 
-# Root check
-if [ "$EUID" -ne 0 ]; then
-  echo "❌ Please run as root"
-  exit 1
-fi
-
-# Ask for port
-read -p "👉 Enter your desired port (1-65535, e.g. 443, 8443): " XRAY_PORT
-if ! [[ "$XRAY_PORT" =~ ^[0-9]+$ ]] || [ "$XRAY_PORT" -lt 1 ] || [ "$XRAY_PORT" -gt 65535 ]; then
-  echo "❌ Invalid port number!"
-  exit 1
-fi
-echo "✅ Using port: $XRAY_PORT"
-
-# Install dependencies
+echo "🚀 Installing dependencies..."
 apt update -y
-apt install -y curl unzip socat nano ufw jq
+apt install -y curl jq ufw iptables-persistent netfilter-persistent
 
-# Install Xray
-bash <(curl -Ls https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh)
+echo "🚀 Installing Xray..."
+bash -c "$(curl -Ls https://github.com/XTLS/Xray-install/raw/main/install-release.sh)"
 
-# Generate REALITY keys automatically
-echo "🔑 Generating REALITY keys..."
-REALITY_KEYS=$(xray x25519)
-REALITY_PRIVATE=$(echo "$REALITY_KEYS" | awk -F': ' '/PrivateKey/ {print $2}' | tr -d '\r\n')
+sleep 2
 
-if [[ -z "$REALITY_PRIVATE" ]]; then
-  echo "❌ Failed to generate REALITY private key!"
-  exit 1
+echo "🔐 Generating REALITY keys..."
+KEYS=$(xray x25519)
+
+PRIVATE_KEY=$(echo "$KEYS" | grep "PrivateKey" | awk '{print $3}')
+PASSWORD=$(echo "$KEYS" | grep "Password" | awk '{print $2}')
+SHORT_ID=$(openssl rand -hex 4)
+UUID=$(cat /proc/sys/kernel/random/uuid)
+
+if [[ -z "$PRIVATE_KEY" || -z "$PASSWORD" ]]; then
+    echo "❌ REALITY key generation FAILED"
+    exit 1
 fi
 
-# Generate a shortId for this client
-REALITY_SHORTID=$(openssl rand -hex 2)
+echo "✅ Keys generated"
+echo "UUID: $UUID"
+echo "PrivateKey: $PRIVATE_KEY"
+echo "Password(pbk): $PASSWORD"
+echo "ShortID: $SHORT_ID"
 
-# Generate UUID for the user
-UUID=$(xray uuid)
+echo "📝 Writing Xray config..."
+mkdir -p /usr/local/etc/xray
 
-# Create single-user config
-cat > /usr/local/etc/xray/config.json <<EOF
+cat > $XRAY_CONFIG <<EOF
 {
   "log": { "loglevel": "warning" },
   "inbounds": [
     {
       "listen": "0.0.0.0",
-      "port": $XRAY_PORT,
+      "port": $PORT,
       "protocol": "vless",
       "settings": {
         "clients": [
@@ -66,55 +61,49 @@ cat > /usr/local/etc/xray/config.json <<EOF
         "security": "reality",
         "realitySettings": {
           "show": false,
-          "dest": "www.cloudflare.com:443",
+          "dest": "$DEST",
           "xver": 0,
-          "serverNames": ["www.cloudflare.com"],
-          "privateKey": "$REALITY_PRIVATE",
-          "shortIds": ["$REALITY_SHORTID"]
+          "serverNames": ["$SNI"],
+          "privateKey": "$PRIVATE_KEY",
+          "shortIds": ["$SHORT_ID"]
         }
       }
     }
   ],
-  "outbounds": [{ "protocol": "freedom" }]
+  "outbounds": [
+    { "protocol": "freedom" }
+  ]
 }
 EOF
 
-# Validate config
-xray run -test -config /usr/local/etc/xray/config.json
-if [ $? -ne 0 ]; then
-  echo "❌ Config validation failed! Exiting."
-  exit 1
-fi
+echo "🔥 Firewall setup..."
+ufw allow $PORT
+ufw --force enable
 
-# Open firewall
-#ufw allow $XRAY_PORT
-#ufw --force enable
+echo "🔒 Enforcing ONE DEVICE ONLY (iptables connlimit)..."
+iptables -I INPUT -p tcp --dport $PORT -m connlimit --connlimit-above 1 -j DROP
+netfilter-persistent save
 
-# Start Xray service
+echo "🚀 Restarting Xray..."
 systemctl daemon-reload
-systemctl enable xray
 systemctl restart xray
+systemctl enable xray
 
-sleep 2
+SERVER_IP=$(curl -s ifconfig.me)
 
-# Check status
-if ! systemctl is-active --quiet xray; then
-  echo "❌ Xray failed to start. Check logs:"
-  journalctl -u xray -n 30 --no-pager
-  exit 1
-fi
-
-# Generate VLESS link
-SERVER_IP=$(curl -s https://api.ipify.org)
-VLESS_LINK="vless://$UUID@$SERVER_IP:$XRAY_PORT?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=www.cloudflare.com&pbk=$REALITY_PRIVATE&sid=$REALITY_SHORTID#IP-ONLY-VLESS"
-
-echo ""
+echo
+echo "✅ ✅ ✅ INSTALLATION COMPLETE ✅ ✅ ✅"
 echo "======================================"
-echo "✅ INSTALLATION SUCCESSFUL"
-echo "Server IP  : $SERVER_IP"
-echo "Port       : $XRAY_PORT"
-echo "UUID       : $UUID"
-echo ""
-echo "✅ VLESS LINK (ONE USER ONLY):"
-echo "$VLESS_LINK"
+echo "IP        : $SERVER_IP"
+echo "Port      : $PORT"
+echo "UUID      : $UUID"
+echo "SNI       : $SNI"
+echo "pbk       : $PASSWORD"
+echo "Short ID  : $SHORT_ID"
 echo "======================================"
+echo
+echo "✅ ✅ ✅ VLESS LINK (ONE DEVICE ONLY):"
+echo
+echo "vless://$UUID@$SERVER_IP:$PORT?type=tcp&security=reality&flow=xtls-rprx-vision&sni=$SNI&pbk=$PASSWORD&sid=$SHORT_ID&fp=$FP#ONE-DEVICE"
+echo
+echo "✅ Import into v2rayN / v2rayNG / Shadowrocket"
