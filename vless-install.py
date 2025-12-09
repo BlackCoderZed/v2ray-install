@@ -15,7 +15,9 @@ def run(cmd):
     return subprocess.check_output(cmd, shell=True, text=True).strip()
 
 print("🔧 Installing Xray Core...")
-run("bash <(curl -Ls https://github.com/XTLS/Xray-install/raw/main/install-release.sh)")
+run("curl -Ls https://github.com/XTLS/Xray-install/raw/main/install-release.sh -o /tmp/xray-install.sh")
+run("bash /tmp/xray-install.sh")
+
 
 print("🔑 Generating UUID...")
 uuid_val = str(uuid.uuid4())
