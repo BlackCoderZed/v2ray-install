@@ -21,7 +21,7 @@ UUID = str(uuid.uuid4())
 
 print("🔐 Generating REALITY keys...")
 raw = run(f"{XRAY_BIN} x25519")
-priv = re.search(r"Private key:\s*(.+)", raw)
+priv = re.search(r"PrivateKey:\s*(.+)", raw)
 pub = re.search(r"Password:\s*(.+)", raw)
 
 if not priv or not pub:
