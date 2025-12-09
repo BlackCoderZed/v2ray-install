@@ -25,10 +25,9 @@ uuid_val = str(uuid.uuid4())
 print("🔐 Generating Reality keys...")
 key_output = run("xray x25519")
 
-data = json.loads(key_output)
-private_key = data["privateKey"]
-public_key = data["password"]
-hash32 = data["hash32"][:8]   # short id (8 hex)
+private_key = re.search(r"PrivateKey:\s*(.+)", key_output).group(1).strip()
+public_key  = re.search(r"Password:\s*(.+)", key_output).group(1).strip()
+hash32      = re.search(r"Hash32:\s*(.+)", key_output).group(1).strip()[:8]
 
 config = {
     "log": {
