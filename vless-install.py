@@ -1,72 +1,58 @@
 #!/usr/bin/env python3
-import subprocess
-import json
-import uuid
-import os
-import random
+import subprocess, json, uuid, os, re, sys, time
 
 XRAY_CONFIG = "/usr/local/etc/xray/config.json"
+XRAY_BIN = "/usr/local/bin/xray"
 PORT = 8443
 DEST = "www.microsoft.com:443"
 SNI = "www.microsoft.com"
 FP = "chrome"
 
-
 def run(cmd):
     return subprocess.check_output(cmd, shell=True, text=True).strip()
 
+print("\n🚀 Installing Xray Core...")
+run("bash -c 'curl -Ls https://github.com/XTLS/Xray-install/raw/main/install-release.sh | bash'")
 
-# ---------------- INSTALL XRAY ----------------
-print("🔧 Installing Xray Core...")
-run("curl -Ls https://github.com/XTLS/Xray-install/raw/main/install-release.sh -o xray_install.sh")
-run("chmod +x xray_install.sh")
-run("./xray_install.sh")
+time.sleep(2)
 
-
-# ---------------- GENERATE UUID ----------------
 print("🔑 Generating UUID...")
-uuid_val = str(uuid.uuid4())
+UUID = str(uuid.uuid4())
 
+print("🔐 Generating REALITY keys...")
+raw = run(f"{XRAY_BIN} x25519")
+priv = re.search(r"Private key:\s*(.+)", raw)
+pub = re.search(r"Password:\s*(.+)", raw)
 
-# ---------------- GENERATE REALITY KEYS ----------------
-print("🔐 Generating Reality keys...")
-key_output = run("xray x25519")
+if not priv or not pub:
+    print("❌ Failed to generate REALITY keys.")
+    sys.exit(1)
 
-# Output format example:
-# Private key: xxxx
-# Public key:  yyyy
+PRIVATE_KEY = priv.group(1).strip()
+PUBLIC_KEY = pub.group(1).strip()
+SHORT_ID = uuid.uuid4().hex[:8]
 
-private_key = ""
-public_key = ""
+print("✅ Keys generated successfully")
 
-for line in key_output.splitlines():
-    if "Private key" in line:
-        private_key = line.split(":")[1].strip()
-    elif "Public key" in line:
-        public_key = line.split(":")[1].strip()
-
-if not private_key or not public_key:
-    raise Exception("❌ Failed to generate Reality keys!")
-
-
-# ---------------- GENERATE VALID HEX SHORT ID ----------------
-hash32 = ''.join(random.choice('0123456789abcdef') for _ in range(8))
-
-
-# ---------------- BUILD XRAY CONFIG ----------------
-config = {
-    "log": {
-        "loglevel": "warning"
+CONFIG = {
+    "log": {"loglevel": "warning"},
+    "stats": {},
+    "api": {
+        "services": ["HandlerService", "StatsService"],
+        "tag": "api"
     },
     "inbounds": [
         {
+            "listen": "0.0.0.0",
             "port": PORT,
             "protocol": "vless",
+            "tag": "in",
             "settings": {
                 "clients": [
                     {
-                        "id": uuid_val,
-                        "flow": "xtls-rprx-vision"
+                        "id": UUID,
+                        "flow": "xtls-rprx-vision",
+                        "email": "user1"
                     }
                 ],
                 "decryption": "none"
@@ -79,61 +65,98 @@ config = {
                     "dest": DEST,
                     "xver": 0,
                     "serverNames": [SNI],
-                    "privateKey": private_key,
-                    "shortIds": [hash32]
+                    "privateKey": PRIVATE_KEY,
+                    "shortIds": [SHORT_ID]
                 }
+            }
+        },
+        {
+            "listen": "127.0.0.1",
+            "port": 10085,
+            "protocol": "dokodemo-door",
+            "tag": "api",
+            "settings": {
+                "address": "127.0.0.1"
             }
         }
     ],
     "outbounds": [
-        {
-            "protocol": "freedom",
-            "settings": {}
-        }
-    ]
+        {"protocol": "freedom", "tag": "direct"},
+        {"protocol": "blackhole", "tag": "blocked"}
+    ],
+    "routing": {
+        "rules": [
+            {
+                "type": "field",
+                "inboundTag": ["api"],
+                "outboundTag": "direct"
+            }
+        ]
+    }
 }
 
-
-# ---------------- WRITE CONFIG ----------------
-print("📝 Writing Xray config...")
+print("📝 Writing config...")
 os.makedirs(os.path.dirname(XRAY_CONFIG), exist_ok=True)
 with open(XRAY_CONFIG, "w") as f:
-    json.dump(config, f, indent=2)
+    json.dump(CONFIG, f, indent=2)
 
+print("🔥 Firewall + IP limit setup...")
+run("apt install -y iptables-persistent netfilter-persistent jq")
 
-# ---------------- FIREWALL ----------------
-print("🔥 Opening firewall...")
-run(f"ufw allow {PORT} || true")
-run("ufw reload || true")
+run(f"ufw allow {PORT}")
+run("ufw reload")
 
+LIMIT_SCRIPT = "/usr/local/bin/xray-1device.sh"
 
-# ---------------- START XRAY ----------------
-print("🚀 Starting Xray...")
+with open(LIMIT_SCRIPT, "w") as f:
+    f.write("""#!/bin/bash
+XRAY="/usr/local/bin/xray api stats --server=127.0.0.1:10085"
+CACHE="/tmp/xray-ip.lock"
+touch $CACHE
+
+$XRAY | grep inbound | while read line; do
+    UUID=$(echo $line | awk -F'>>>' '{print $2}' | awk -F' ' '{print $1}')
+    IP=$(echo $line | awk -F'from ' '{print $2}' | awk '{print $1}')
+
+    if grep -q "$UUID" $CACHE; then
+        OLDIP=$(grep "$UUID" $CACHE | awk '{print $2}')
+        if [ "$IP" != "$OLDIP" ]; then
+            iptables -I INPUT -s $IP -j DROP
+        fi
+    else
+        echo "$UUID $IP" >> $CACHE
+    fi
+done
+""")
+
+run("chmod +x /usr/local/bin/xray-1device.sh")
+
+run("(crontab -l 2>/dev/null; echo '*/1 * * * * /usr/local/bin/xray-1device.sh') | crontab -")
+
+print("🚀 Restarting Xray...")
+run("systemctl daemon-reload")
 run("systemctl restart xray")
 run("systemctl enable xray")
 
+SERVER_IP = run("curl -s ifconfig.me")
 
-# ---------------- FETCH SERVER IP ----------------
-server_ip = run("curl -s ifconfig.me")
+print("\n✅ INSTALL COMPLETE")
+print("====================================")
+print(f"IP        : {SERVER_IP}")
+print(f"Port      : {PORT}")
+print(f"UUID      : {UUID}")
+print(f"SNI       : {SNI}")
+print(f"PublicKey : {PUBLIC_KEY}")
+print(f"Short ID  : {SHORT_ID}")
+print("====================================\n")
 
-
-# ---------------- OUTPUT INFO ----------------
-print("\n✅ INSTALL COMPLETE\n")
-print("====== SERVER INFO ======")
-print(f"IP       : {server_ip}")
-print(f"Port     : {PORT}")
-print(f"UUID     : {uuid_val}")
-print(f"Flow     : xtls-rprx-vision")
-print(f"SNI      : {SNI}")
-print(f"PublicKey: {public_key}")
-print(f"Short ID : {hash32}")
-
-print("\n====== VLESS URI ======")
-print(
-    f"vless://{uuid_val}@{server_ip}:{PORT}"
+VLESS = (
+    f"vless://{UUID}@{SERVER_IP}:{PORT}"
     f"?type=tcp&security=reality&flow=xtls-rprx-vision"
-    f"&sni={SNI}&pbk={public_key}&sid={hash32}&fp={FP}"
-    f"#DO-Reality"
+    f"&sni={SNI}&pbk={PUBLIC_KEY}&sid={SHORT_ID}&fp={FP}"
+    f"#ONE-DEVICE"
 )
 
-print("\n✅ Import the above link into v2rayN / v2rayNG / Shadowrocket")
+print("✅ VLESS LINK (1 DEVICE ONLY):\n")
+print(VLESS)
+print("\n✅ Import into v2rayN / v2rayNG / Shadowrocket")
